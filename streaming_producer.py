@@ -10,7 +10,7 @@ def timed_call(fn, calls_per_second, *args, **kwargs):
     start = time.time()
     fn(*args, **kwargs)
     fn_time = time.time() - start
-    sleep_duration = abs((1.0 - calls_per_second * fn_time) / calls_per_second)
+    sleep_duration = max(0, (1.0 - calls_per_second * fn_time) / calls_per_second)
     print sleep_duration
     while True:
         fn(*args, **kwargs)
