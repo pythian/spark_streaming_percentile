@@ -1,20 +1,17 @@
 # coding: utf-8
 import json
+from time import time
 from operator import add
 
 from tdigest import TDigest
-from kafka import SimpleProducer, KafkaClient
+from kafka import KeyedProducer, RoundRobinPartitioner, KafkaClient
 
 from pyspark.streaming.kafka import KafkaUtils
 from pyspark.streaming import StreamingContext
-ssc = StreamingContext(sc, 3)
-ssc.checkpoint('checkpoint')
-kvs = KafkaUtils.createDirectStream(ssc, ["messages"],
-                                    {"metadata.broker.list": "localhost:9092"})
-scores = {'profile.picture.like': 2, 'profile.view': 1, 'message.private': 3}
-scores_b = sc.broadcast(scores)
+from pyspark import SparkContext
 
 
+percentile_broadcast = None
 def load_msg(msg):
     message = json.loads(msg[1])
     return message['user_id'], scores_b.value[message['activity']]
@@ -32,31 +29,41 @@ def digest_partitions(values):
     return [digest]
 
 
-def publish_popular_users(percentile_value, popular_rdd):
-    kafka = KafkaClient("localhost:9092")
-    producer = SimpleProducer(kafka)
-    producer.send_messages('popular_users',
-                                   str(popular_rdd.map(lambda row: row[0]).collect()))
-    producer.send_messages('popular_score',
-                                   str(percentile_value))
+def publish_popular_users(popular_rdd):
+    key = 'popular_{}'.format(int(time()))
+    message_key = popular_rdd.context.broadcast(key)
 
-
-def percentile_and_filter(rdd):
-    digest = rdd.map(lambda row: row[1]).mapPartitions(
-        digest_partitions).reduce(add)
-    percentile_value = digest.percentile(0.95)
-    filtered = rdd.filter(lambda row: row[1] > percentile_value)
-    publish_popular_users(percentile_value, filtered)
+    def publish_partition(partition):
+        kafka = KafkaClient("localhost:9092")
+        producer = KeyedProducer(kafka, partitioner=RoundRobinPartitioner,
+                                 async=True, batch_send=True)
+        producer.send_messages('popular_users', message_key.value,
+                               *[json.dumps(user) for user in partition])
+    print "PUBLISH PARTITION"
+    popular_rdd.foreachPartition(publish_partition)
+    print "\n\n\nRAN\n\n"
 
 
 def filter_most_popular(rdd):
     percentile_limit = rdd.map(lambda row: row[1]).mapPartitions(
         digest_partitions).reduce(add)
-    percentile_limit_b = rdd.context.broadcast(percentile_limit)
+    percentile_limit_b = rdd.context.broadcast(percentile_limit.percentile(0.95))
+    print "PERCENTILE: {}".format(percentile_limit_b.value)
     return rdd.filter(lambda row: row[1] > percentile_limit_b.value)
 
-mapped = kvs.map(load_msg)
-updated = mapped.updateStateByKey(update_scorecount)
-updated.transform(filter_most_popular) # foreachRDD(percentile_and_filter)
-updated.pprint()
-ssc.start()
+
+if __name__ == '__main__':
+    sc = SparkContext(appName="streaming_percentile")
+    ssc = StreamingContext(sc, 3)
+    ssc.checkpoint('checkpoint')
+    kvs = KafkaUtils.createDirectStream(ssc, ["messages"],
+                                        {"metadata.broker.list": "localhost:9092"})
+    scores = {'profile.picture.like': 2, 'profile.view': 1, 'message.private': 3}
+    scores_b = sc.broadcast(scores)
+    mapped = kvs.map(load_msg)
+    updated = mapped.updateStateByKey(update_scorecount)
+    popular_stream = updated.transform(filter_most_popular)
+    popular_stream.foreachRDD(publish_popular_users)
+    popular_stream.pprint()
+    ssc.start()
+    ssc.awaitTermination()
