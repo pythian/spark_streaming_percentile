@@ -7,7 +7,7 @@ from kafka import SimpleProducer, KafkaClient
 
 from pyspark.streaming.kafka import KafkaUtils
 from pyspark.streaming import StreamingContext
-ssc = StreamingContext(sc, 2)
+ssc = StreamingContext(sc, 3)
 ssc.checkpoint('checkpoint')
 kvs = KafkaUtils.createDirectStream(ssc, ["messages"],
                                     {"metadata.broker.list": "localhost:9092"})
@@ -48,7 +48,15 @@ def percentile_and_filter(rdd):
     filtered = rdd.filter(lambda row: row[1] > percentile_value)
     publish_popular_users(percentile_value, filtered)
 
+
+def filter_most_popular(rdd):
+    percentile_limit = rdd.map(lambda row: row[1]).mapPartitions(
+        digest_partitions).reduce(add)
+    percentile_limit_b = rdd.context.broadcast(percentile_limit)
+    return rdd.filter(lambda row: row[1] > percentile_limit_b.value)
+
 mapped = kvs.map(load_msg)
 updated = mapped.updateStateByKey(update_scorecount)
-updated.foreachRDD(percentile_and_filter)
+updated.transform(filter_most_popular) # foreachRDD(percentile_and_filter)
+updated.pprint()
 ssc.start()
