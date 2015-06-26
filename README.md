@@ -1,5 +1,5 @@
 ##Purpose 
-This is a repo for my blog post at the [Pythian bog]()
+This is a repo for my blog post at the [Pythian bog](https://docs.google.com/a/pythian.com/document/d/12f0-YVjfZ8Q6gkT13Jh-Ml6d3ZkVzvWzh2Ugs0xdUq8/edit?usp=sharing)
 
 ##Prerequisites
 
